@@ -5,17 +5,20 @@ import requests
 import pandas as pd
 import numpy as np
 import yfinance as yf
+import ftmo_guard
 
-# S&P 500 V1.0 RESEARCH — independent paper account per strategy
+# S&P 500 FTMO $100k RESEARCH — independent paper account per strategy
 SYMBOL = os.getenv('SYMBOL', 'SPY')
-START_BALANCE = float(os.getenv('START_BALANCE', '500'))
-RISK_PER_TRADE = float(os.getenv('RISK_PER_TRADE', '0.01'))
+START_BALANCE = float(os.getenv('START_BALANCE', '100000'))
+RISK_PER_TRADE = float(os.getenv('RISK_PER_TRADE', '0.0025'))
 TAKER_FEE = float(os.getenv('TAKER_FEE', '0.00035'))
 SLIPPAGE_BPS = float(os.getenv('SLIPPAGE_BPS', '1.0'))
 POLL_SECONDS = int(os.getenv('POLL_SECONDS', '300'))
 BOOTSTRAP_DAYS = int(os.getenv('BOOTSTRAP_DAYS', '59'))
-RUN_MODE = os.getenv('RUN_MODE','RESEARCH').upper()
+RUN_MODE = os.getenv('RUN_MODE','FTMO_PAPER').upper()
+FTMO_MODE = RUN_MODE == 'FTMO_PAPER'
 RESEARCH_MODE = RUN_MODE == 'RESEARCH'
+if FTMO_MODE and START_BALANCE != 100000: raise ValueError('FTMO profile requires START_BALANCE=100000')
 RESEARCH_EMERGENCY_DD = float(os.getenv('RESEARCH_EMERGENCY_DD','0.25'))
 # V1.7: no shared portfolio cap. Each strategy owns an independent paper account.
 COOLDOWN_AFTER_LOSSES = 3
@@ -43,7 +46,7 @@ MAX_LIVE_COST_R = float(os.getenv('MAX_LIVE_COST_R','0.30'))
 MIN_HTF_BARS = 50
 DATA_STATUS = {'ready': False, 'error': None, 'last_candle': None}
 data_lock = threading.RLock()
-DATA_DIR = os.getenv('DATA_DIR', '/data')
+DATA_DIR = os.getenv('DATA_DIR', '/data/ftmo100k-v1')
 try: os.makedirs(DATA_DIR, exist_ok=True)
 except PermissionError:
     DATA_DIR = './data'; os.makedirs(DATA_DIR, exist_ok=True)
@@ -73,7 +76,7 @@ def finite(x):
 def strategy_default():
     return {'position':None,'balance':START_BALANCE,'peak_balance':START_BALANCE,'max_drawdown':0.0,'risk_day':None,'day_start_balance':START_BALANCE,'loss_streak':0,'cooldown_until':None,'scans':0,'signals':0,'blocked':0,'last_signal':'—','last_signal_time':None}
 def default_state():
-    return {'version':'SP500-V1.0-RESEARCH','created':utc_now().isoformat(),'last_processed_5m':None,'balance':START_BALANCE,'peak_balance':START_BALANCE,'max_drawdown':0.0,'total_trades':0,'winning_trades':0,'losing_trades':0,'gross_profit':0.0,'gross_loss':0.0,'global_loss_streak':0,'risk_day':None,'day_start_balance':START_BALANCE,'shadow_candidates':{},'strategies':{k:strategy_default() for k in STRATEGIES}}
+    return {'version':'SP500-V1.1-FTMO-PAPER','created':utc_now().isoformat(),'last_processed_5m':None,'balance':START_BALANCE,'peak_balance':START_BALANCE,'max_drawdown':0.0,'total_trades':0,'winning_trades':0,'losing_trades':0,'gross_profit':0.0,'gross_loss':0.0,'global_loss_streak':0,'risk_day':None,'day_start_balance':START_BALANCE,'shadow_candidates':{},'strategies':{k:strategy_default() for k in STRATEGIES}}
 def normalize_state(s):
     base=default_state()
     for k,v in base.items(): s.setdefault(k,v)
@@ -526,7 +529,7 @@ def validate_order_candidate(key,sig):
 def open_position(key,state,s,sig):
     entry,dist,side=sig['entry'],sig['stop_distance'],sig['signal'];cfg=STRATEGIES[key]
     stop=entry-dist if side=='LONG' else entry+dist;target=entry+cfg['rr']*dist if side=='LONG' else entry-cfg['rr']*dist
-    risk_pct=effective_risk_pct(s);risk_eur=s['balance']*risk_pct;qty=risk_eur/dist;notional=qty*entry
+    risk_pct=effective_risk_pct(s);risk_eur=ftmo_guard.RISK_USD if FTMO_MODE else s['balance']*risk_pct;qty=risk_eur/dist;notional=qty*entry
     p={'candidate_id':sig['candidate_id'],'side':side,'entry_time':sig['time'].isoformat(),'entry_price':entry,
        'initial_stop':stop,'stop':stop,'target':target,'stop_distance':dist,'risk_eur':risk_eur,'risk_pct':risk_pct,
        'qty':qty,'notional':notional,'setup':sig['reason'],'regime':sig.get('regime'),'mfe_r':0.0,'mae_r':0.0,
@@ -542,6 +545,8 @@ def close_position(key,state,s,exit_price,exit_time,reason):
     p=s['position'];raw_r=(exit_price-p['entry_price'])/p['stop_distance'] if p['side']=='LONG' else (p['entry_price']-exit_price)/p['stop_distance']
     gross=p['risk_eur']*raw_r;fee=(p['notional']+p['qty']*exit_price)*TAKER_FEE;slip=(p['notional']+p['qty']*exit_price)*(SLIPPAGE_BPS/10000.0)
     pnl=gross-fee-slip;net_r=pnl/p['risk_eur'] if p['risk_eur'] else 0
+    
+    if FTMO_MODE:ftmo_guard.record_close(state,exit_time,pnl)
     s['balance']+=pnl;s['peak_balance']=max(s['peak_balance'],s['balance']);s['max_drawdown']=min(s['max_drawdown'],s['balance']/s['peak_balance']-1);state['total_trades']+=1
     if pnl>0:
         state['winning_trades']+=1;state['gross_profit']+=pnl;s['loss_streak']=0
@@ -587,7 +592,7 @@ def check_position(key,state,s,candle):
         log_event({'schema_version':'6.0','candidate_id':p['candidate_id'],'time':t.isoformat(),'strategy':key,'event':'INTRABAR_AMBIGUOUS',
                    'price':cl,'r_value':None,'old_stop':p['stop'],'new_stop':p['stop'],'detail':'stop_and_target_same_5m_bar; conservative stop-first'})
         return close_position(key,state,s,p['stop'],t,'AMBIGUOUS_STOP_FIRST')
-    if stop_hit:return close_position(key,state,s,p['stop'],t,'STOP' if p.get('protected_stage',0)==0 else 'PROTECTED_STOP')
+    if stop_hit:return close_position(key,state,s,(min(p['stop'],float(candle.open)) if p['side']=='LONG' else max(p['stop'],float(candle.open))),t,'STOP' if p.get('protected_stage',0)==0 else 'PROTECTED_STOP')
     if tp_hit:return close_position(key,state,s,p['target'],t,'TAKE_PROFIT')
 
     # Exit Engine V2: stateful protection. Thresholds are deliberately broad hypotheses, not fitted per strategy.
@@ -631,20 +636,38 @@ def check_position(key,state,s,candle):
     if t-pd.Timestamp(p['entry_time'])>=pd.Timedelta(hours=STRATEGIES[key]['max_hours']):
         return close_position(key,state,s,cl,t,'TIME_EXIT')
 
+def ftmo_view(state):
+    if not FTMO_MODE:return None
+    g=state.get('ftmo')
+    if not g:return {'execution':'PAPER_ONLY','mt5_connected':False,'status':'WAITING_FOR_MARKET_DATA'}
+    # Read-only dashboard: snapshot updates are made by the engine, not HTTP requests.
+    return g.get('view', {'execution':'PAPER_ONLY','mt5_connected':False})
+
+def ftmo_update(state, t, price):
+    balance=ftmo_guard.account_balance(state,START_BALANCE)
+    eq=ftmo_guard.equity(state,balance,price,TAKER_FEE+SLIPPAGE_BPS/10000.0)
+    g=ftmo_guard.advance(state,t,balance)
+    g['view']=ftmo_guard.snapshot(state,t,balance,eq,open_position_count(state))
+    return g['view']
+
 def stats(state):
     # Aggregate display only; execution/risk remains completely strategy-isolated.
     live=[state['strategies'][k] for k,cfg in STRATEGIES.items() if cfg['enabled']]
     n_accounts=max(len(live),1)
     combined_balance=sum(float(a.get('balance',START_BALANCE)) for a in live)
     combined_start=START_BALANCE*n_accounts
+    if FTMO_MODE:
+        combined_start=ftmo_guard.INITIAL
+        combined_balance=ftmo_guard.account_balance(state,START_BALANCE)
+        n_accounts=1
     combined_peak=sum(float(a.get('peak_balance',START_BALANCE)) for a in live)
-    worst_dd=min([float(a.get('max_drawdown',0)) for a in live] or [0.0])
+    worst_dd=state.get('ftmo',{}).get('max_drawdown',0.0) if FTMO_MODE else min([float(a.get('max_drawdown',0)) for a in live] or [0.0])
     t=state['total_trades']; w=state['winning_trades']
     pf=state['gross_profit']/state['gross_loss'] if state['gross_loss'] else (999 if state['gross_profit'] else 0)
     return {'balance':combined_balance,'peak_balance':combined_peak,'return_pct':(combined_balance/combined_start-1)*100,
             'net_pnl':combined_balance-combined_start,'net_r':sum(float(x.get('net_R') or 0) for x in _read_csv_records(TRADES_FILE,100000)),
             'trades':t,'wins':w,'losses':state.get('losing_trades',0),'winrate':100*w/t if t else 0,'pf':pf,
-            'max_dd':100*worst_dd,'open_risk_pct':100*open_risk(state),'accounts':n_accounts}
+            'max_dd':100*worst_dd,'open_risk_pct':100*open_risk(state),'accounts':n_accounts,'ftmo':ftmo_view(state)}
 
 
 def _read_csv_records(path,n=50):
@@ -668,7 +691,7 @@ def strategy_dashboard(state):
         gp=float(pnl_series[pnl_series>0].sum()) if n else 0.0
         gl=abs(float(pnl_series[pnl_series<0].sum())) if n else 0.0
         pf=gp/gl if gl else (999 if gp else 0)
-        out.append({'key':key,'label':cfg['label'],'mode':'LIVE' if cfg['enabled'] else 'SHADOW',
+        out.append({'key':key,'label':cfg['label'],'mode':'PAPER' if cfg['enabled'] else 'SHADOW',
                     'trades':n,'winrate':100*wins/n if n else 0,'pnl':pnl,'net_r':nr,'pf':pf,
                     'signals':st.get('signals',0),'blocked':st.get('blocked',0),
                     'loss_streak':st.get('loss_streak',0),'cooldown_until':st.get('cooldown_until'),
@@ -696,19 +719,19 @@ def regime_performance():
             out.append({'regime':rg,'trades':len(d),'winrate':100*(pnl>0).mean(),'pnl':float(pnl.sum()),'net_r':float(nr.sum())})
         return sorted(out,key=lambda x:x['trades'],reverse=True)
     except Exception:return []
-DASH='''<!doctype html><html lang="nl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="refresh" content="20"><title>S&P 500 V1.0 Research</title><style>
+DASH='''<!doctype html><html lang="nl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="refresh" content="20"><title>S&P 500 FTMO $100k Research</title><style>
 :root{--bg:#0b0e13;--card:#151922;--card2:#10141c;--line:#2a3140;--text:#f5f7fb;--muted:#8e98aa;--green:#55d68b;--red:#ff6b72;--amber:#f3c969}*{box-sizing:border-box}body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:var(--bg);color:var(--text);margin:0;padding:14px}.w{max-width:1250px;margin:auto}.top{display:flex;justify-content:space-between;align-items:center;gap:12px;margin:8px 2px 16px}.title{font-size:34px;font-weight:900}.sub,.muted{color:var(--muted)}.running{font-size:12px;padding:6px 9px;border-radius:999px;background:#153222;color:var(--green);font-weight:800}.grid{display:grid;grid-template-columns:repeat(6,1fr);gap:9px}.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:13px}.label{font-size:11px;color:var(--muted);text-transform:uppercase}.value{font-size:24px;font-weight:850;margin-top:4px}.mini{font-size:12px;margin-top:3px}.pos{color:var(--green)!important}.neg{color:var(--red)!important}.amber{color:var(--amber)!important}.section{margin-top:10px}.section h2{font-size:16px;margin:0 0 10px}.market{display:grid;grid-template-columns:1.4fr repeat(4,1fr);gap:9px}.tag{display:inline-block;padding:4px 7px;border-radius:999px;font-size:10px}.live{background:#153222;color:var(--green)}.shadow{background:#332d18;color:var(--amber)}.tablewrap{overflow-x:auto;-webkit-overflow-scrolling:touch}table{width:100%;border-collapse:collapse;font-size:12px;white-space:nowrap}td,th{padding:9px 8px;border-bottom:1px solid var(--line);text-align:left}th{color:var(--muted);font-size:10px;text-transform:uppercase}.strategy{font-weight:750}.pill{padding:3px 6px;border-radius:6px;background:#242b39;font-size:10px}.two{display:grid;grid-template-columns:1.35fr 1fr;gap:10px}.empty{padding:18px;text-align:center;color:var(--muted);background:var(--card2);border-radius:10px}.downloads{display:flex;gap:8px;flex-wrap:wrap}.btn{color:var(--text);text-decoration:none;background:#242b39;border:1px solid #343d4f;border-radius:9px;padding:8px 10px;font-size:12px}.small{font-size:10px}
 @media(max-width:900px){.grid{grid-template-columns:repeat(3,1fr)}.market{grid-template-columns:repeat(3,1fr)}.two{grid-template-columns:1fr}}@media(max-width:520px){body{padding:10px}.grid{grid-template-columns:repeat(2,1fr)}.market{grid-template-columns:repeat(2,1fr)}.market>div:first-child{grid-column:span 2}.card{padding:11px}.value{font-size:21px}}
-</style></head><body><div class="w"><div class="top"><div><div class="title">S&P 500 V1.0</div><div class="sub">Control Center · independent strategy accounts · paper trading · refresh 20s</div></div><div class="running">● PAPER RESEARCH</div></div>
+</style></head><body><div class="w"><div class="top"><div><div class="title">S&P 500 FTMO $100k</div><div class="sub">Control Center · shared $100k paper account · MT5 NOT CONNECTED · refresh 20s</div></div><div class="running">● PAPER RESEARCH</div></div>
 <div class="grid">
 <div class="card"><div class="label">Combined strategy equity</div><div class="value {{'pos' if s.return_pct>=0 else 'neg'}}">${{'%.2f'|format(s.balance)}}</div><div class="mini">{{'%+.2f'|format(s.return_pct)}}%</div></div>
 <div class="card"><div class="label">Net P/L</div><div class="value {{'pos' if s.net_pnl>=0 else 'neg'}}">${{'%+.2f'|format(s.net_pnl)}}</div><div class="mini">{{'%+.2f'|format(s.net_r)}}R totaal</div></div>
 <div class="card"><div class="label">Trades</div><div class="value">{{s.trades}}</div><div class="mini">{{s.wins}}W · {{s.losses}}L</div></div>
 <div class="card"><div class="label">Winrate</div><div class="value">{{'%.1f'|format(s.winrate)}}%</div><div class="mini">PF {{'%.2f'|format(s.pf) if s.pf<900 else '∞'}}</div></div>
-<div class="card"><div class="label">Max DD</div><div class="value {{'neg' if s.max_dd<0 else ''}}">{{'%.2f'|format(s.max_dd)}}%</div><div class="mini">Worst strategy DD</div></div>
-<div class="card"><div class="label">Open risk</div><div class="value">{{'%.2f'|format(s.open_risk_pct)}}%</div><div class="mini">1.00% max per strategy account</div></div></div>
-<div class="section market"><div class="card"><div class="label">Market regime</div><div class="value">{{r.regime}}</div><div class="mini">{{r.direction}} · SPY ${{'{:,.0f}'.format(r.price) if r.price else '—'}}</div></div><div class="card"><div class="label">ADX 1H</div><div class="value">{{'%.1f'|format(r.adx) if r.adx is not none else '—'}}</div></div><div class="card"><div class="label">ER24 1H</div><div class="value">{{'%.3f'|format(r.er24) if r.er24 is not none else '—'}}</div></div><div class="card"><div class="label">Vol ratio</div><div class="value">{{'%.2f'|format(r.vol_ratio) if r.vol_ratio is not none else '—'}}</div></div><div class="card"><div class="label">Open positions</div><div class="value">{{openpos|length}}</div></div></div>
-<div class="card section"><h2>Engine monitor</h2><div class="tablewrap"><table><tr><th>Engine</th><th>Mode</th><th>Account</th><th>Return</th><th>Trades</th><th>WR</th><th>Net R</th><th>P/L</th><th>PF</th><th>Signals</th><th>Blocked</th><th>Loss streak</th><th>Laatste signal</th></tr>{% for x in strat %}<tr><td><div class="strategy">{{x.label}}</div><div class="muted small">{{x.key}}</div></td><td><span class="tag {{'live' if x.mode=='LIVE' else 'shadow'}}">{{x.mode}}</span></td><td>${{'%.2f'|format(x.account_balance)}}</td><td class="{{'pos' if x.account_return>=0 else 'neg'}}">{{'%+.2f'|format(x.account_return)}}%</td><td>{{x.trades}}</td><td>{{'%.1f'|format(x.winrate)}}%</td><td class="{{'pos' if x.net_r>0 else 'neg' if x.net_r<0 else ''}}">{{'%+.2f'|format(x.net_r)}}</td><td class="{{'pos' if x.pnl>0 else 'neg' if x.pnl<0 else ''}}">${{'%+.2f'|format(x.pnl)}}</td><td>{{'%.2f'|format(x.pf) if x.pf<900 else '∞'}}</td><td>{{x.signals}}</td><td>{{x.blocked}}</td><td>{{x.loss_streak}}</td><td>{{x.last_signal}}{% if x.cooldown_until %}<div class="amber small">Cooldown → {{x.cooldown_until[11:16]}}</div>{% endif %}</td></tr>{% endfor %}</table></div></div>
+<div class="card"><div class="label">Max DD</div><div class="value {{'neg' if s.max_dd<0 else ''}}">{{'%.2f'|format(s.max_dd)}}%</div><div class="mini">Account equity drawdown</div></div>
+<div class="card"><div class="label">Open risk</div><div class="value">{{'%.2f'|format(s.open_risk_pct)}}%</div><div class="mini">$250 risk · max 1 open position</div></div></div>
+{% if s.ftmo %}<div class="section"><div class="card"><div class="label">FTMO Free Trial · PAPER ONLY · MT5 niet verbonden</div><div class="mini">Winstdoel $5.000 · Dagverliesgrens ${{s.ftmo.daily_loss_floor|default(97000)}} · Totale trailing grens ${{s.ftmo.trailing_loss_floor|default(90000)}} · Best day {{s.ftmo.best_day_share_pct|default('—')}}% · {{s.ftmo.entry_block_reason|default('Wacht op koersdata',true)}}</div></div></div>{% endif %}<div class="section market"><div class="card"><div class="label">Market regime</div><div class="value">{{r.regime}}</div><div class="mini">{{r.direction}} · SPY ${{'{:,.0f}'.format(r.price) if r.price else '—'}}</div></div><div class="card"><div class="label">ADX 1H</div><div class="value">{{'%.1f'|format(r.adx) if r.adx is not none else '—'}}</div></div><div class="card"><div class="label">ER24 1H</div><div class="value">{{'%.3f'|format(r.er24) if r.er24 is not none else '—'}}</div></div><div class="card"><div class="label">Vol ratio</div><div class="value">{{'%.2f'|format(r.vol_ratio) if r.vol_ratio is not none else '—'}}</div></div><div class="card"><div class="label">Open positions</div><div class="value">{{openpos|length}}</div></div></div>
+<div class="card section"><h2>Engine monitor</h2><div class="mini">* Strategieboekhouding: $100k basis + bijdrage per strategie; één gezamenlijk account, bedragen niet optellen.</div><div class="tablewrap"><table><tr><th>Engine</th><th>Mode</th><th>Account</th><th>Return</th><th>Trades</th><th>WR</th><th>Net R</th><th>P/L</th><th>PF</th><th>Signals</th><th>Blocked</th><th>Loss streak</th><th>Laatste signal</th></tr>{% for x in strat %}<tr><td><div class="strategy">{{x.label}}</div><div class="muted small">{{x.key}}</div></td><td><span class="tag {{'live' if x.mode=='LIVE' else 'shadow'}}">{{x.mode}}</span></td><td>${{'%.2f'|format(x.account_balance)}}</td><td class="{{'pos' if x.account_return>=0 else 'neg'}}">{{'%+.2f'|format(x.account_return)}}%</td><td>{{x.trades}}</td><td>{{'%.1f'|format(x.winrate)}}%</td><td class="{{'pos' if x.net_r>0 else 'neg' if x.net_r<0 else ''}}">{{'%+.2f'|format(x.net_r)}}</td><td class="{{'pos' if x.pnl>0 else 'neg' if x.pnl<0 else ''}}">${{'%+.2f'|format(x.pnl)}}</td><td>{{'%.2f'|format(x.pf) if x.pf<900 else '∞'}}</td><td>{{x.signals}}</td><td>{{x.blocked}}</td><td>{{x.loss_streak}}</td><td>{{x.last_signal}}{% if x.cooldown_until %}<div class="amber small">Cooldown → {{x.cooldown_until[11:16]}}</div>{% endif %}</td></tr>{% endfor %}</table></div></div>
 <div class="card section"><h2>Open trades</h2>{% if openpos %}<div class="tablewrap"><table><tr><th>Strategy</th><th>Side</th><th>Entry</th><th>Current</th><th>SL</th><th>TP</th><th>Current R</th><th>MFE</th><th>MAE</th><th>Risk $</th></tr>{% for p in openpos %}<tr><td class="strategy">{{p.strategy}}</td><td>{{p.side}}</td><td>${{'{:,.0f}'.format(p.entry_price)}}</td><td>${{'{:,.0f}'.format(p.current_price)}}</td><td>${{'{:,.0f}'.format(p.stop)}}</td><td>${{'{:,.0f}'.format(p.target)}}</td><td class="{{'pos' if p.current_r>=0 else 'neg'}}">{{'%+.2f'|format(p.current_r)}}R</td><td class="pos">{{'%.2f'|format(p.mfe_r)}}R</td><td class="neg">{{'%.2f'|format(p.mae_r)}}R</td><td>${{'%.2f'|format(p.risk_eur)}}</td></tr>{% endfor %}</table></div>{% else %}<div class="empty">Geen open trades — V1 wacht op een geldige setup.</div>{% endif %}</div>
 <div class="two section"><div class="card"><h2>Recente decisions / signals</h2>{% if decisions %}<div class="tablewrap"><table><tr><th>Tijd</th><th>Strategy</th><th>Side</th><th>Decision</th><th>Setup</th><th>Regime</th><th>ADX</th></tr>{% for d in decisions %}<tr><td>{{d.time[11:16] if d.time else '—'}}</td><td class="strategy">{{d.strategy}}</td><td>{{d.side}}</td><td><span class="pill {{'pos' if d.decision=='OPEN' else 'amber' if d.decision=='SHADOW' else ''}}">{{d.decision}}</span></td><td>{{d.setup}}</td><td>{{d.regime}}</td><td>{{'%.1f'|format(d.adx_1h) if d.adx_1h is not none else '—'}}</td></tr>{% endfor %}</table></div>{% else %}<div class="empty">Nog geen signalen gelogd.</div>{% endif %}</div><div class="card"><h2>Performance per regime</h2>{% if regimes %}<div class="tablewrap"><table><tr><th>Regime</th><th>Trades</th><th>WR</th><th>Net R</th><th>P/L</th></tr>{% for x in regimes %}<tr><td class="strategy">{{x.regime}}</td><td>{{x.trades}}</td><td>{{'%.1f'|format(x.winrate)}}%</td><td class="{{'pos' if x.net_r>0 else 'neg' if x.net_r<0 else ''}}">{{'%+.2f'|format(x.net_r)}}</td><td class="{{'pos' if x.pnl>0 else 'neg' if x.pnl<0 else ''}}">${{'%+.2f'|format(x.pnl)}}</td></tr>{% endfor %}</table></div>{% else %}<div class="empty">Regime-statistieken verschijnen na de eerste gesloten trades.</div>{% endif %}</div></div>
 <div class="card section"><h2>Trade history</h2>{% if recent %}<div class="tablewrap"><table><tr><th>Exit</th><th>Strategy</th><th>Side</th><th>Setup</th><th>Entry</th><th>Exit</th><th>Reason</th><th>Gross R</th><th>Costs R</th><th>Net R</th><th>MFE</th><th>MAE</th><th>Costs $</th><th>P/L</th><th>Balance</th></tr>{% for t in recent %}<tr><td>{{t.exit_time[5:16]|replace('T',' ')}}</td><td class="strategy">{{t.strategy}}</td><td>{{t.side}}</td><td>{{t.setup}}</td><td>${{'{:,.0f}'.format(t.entry)}}</td><td>${{'{:,.0f}'.format(t.exit)}}</td><td>{{t.reason}}</td><td>{{'%+.2f'|format(t.raw_R)}}R</td><td class="amber">-{{'%.2f'|format(t.costs_R)}}R</td><td class="{{'pos' if t.net_R>=0 else 'neg'}}">{{'%+.2f'|format(t.net_R)}}R</td><td class="pos">{{'%.2f'|format(t.MFE_R)}}R</td><td class="neg">{{'%.2f'|format(t.MAE_R)}}R</td><td>${{'%.2f'|format(t.costs_eur)}}</td><td class="{{'pos' if t.pnl_eur>=0 else 'neg'}}">${{'%+.2f'|format(t.pnl_eur)}}</td><td>${{'%.2f'|format(t.balance)}}</td></tr>{% endfor %}</table></div>{% else %}<div class="empty">Nog geen gesloten trades.</div>{% endif %}</div>
@@ -748,7 +771,7 @@ def dashboard():
     return render_template_string(DASH,s=stats(st),r=r,strat=strategy_dashboard(st),openpos=open_positions_dashboard(st,price),decisions=_read_csv_records(DECISIONS_FILE,36),regimes=regime_performance(),recent=recent())
 @app.get('/api/status')
 def status():
-    st=load_state(); c=load_candles(); return jsonify({'version':'SP500-V1.0-RESEARCH','run_mode':RUN_MODE,'symbol':SYMBOL,'market_data':dict(DATA_STATUS),'decision_funnel':decision_funnel(),'stats':stats(st),'regime':regime_snapshot(c),'strategies':STRATEGIES})
+    st=load_state(); c=load_candles(); return jsonify({'version':'SP500-V1.1-FTMO-PAPER','run_mode':RUN_MODE,'symbol':SYMBOL,'market_data':dict(DATA_STATUS),'decision_funnel':decision_funnel(),'stats':stats(st),'regime':regime_snapshot(c),'strategies':STRATEGIES})
 def dl(path,name):
     if not os.path.exists(path):return {'error':'Nog geen bestand.'},404
     return send_file(path,mimetype='text/csv',as_attachment=True,download_name=name)
@@ -763,21 +786,34 @@ def d4():return dl(EVENTS_FILE,'sp500_v1_management_events.csv')
 @app.get('/download/shadow')
 def d5():return dl(SHADOW_FILE,'sp500_v1_shadow_outcomes.csv')
 @app.get('/health')
-def health():return {'status':'ok','version':'SP500-V1.0-RESEARCH','run_mode':RUN_MODE,'symbol':SYMBOL,'market_data':dict(DATA_STATUS),'decision_funnel':decision_funnel(),'risk_per_trade':RISK_PER_TRADE},200
+def health():return {'status':'ok','version':'SP500-V1.1-FTMO-PAPER','run_mode':RUN_MODE,'symbol':SYMBOL,'market_data':dict(DATA_STATUS),'decision_funnel':decision_funnel(),'risk_per_trade':RISK_PER_TRADE},200
 def run_dashboard():app.run(host='0.0.0.0',port=int(os.getenv('PORT','8080')),threaded=True,use_reloader=False)
 
 def main():
-    threading.Thread(target=run_dashboard,daemon=True).start();print(f'S&P 500 V1.0 RESEARCH — PAPER ONLY — mode={RUN_MODE} — auditable research accounts — costs measured/not censored — risk/trade={RISK_PER_TRADE:.2%}',flush=True)
+    threading.Thread(target=run_dashboard,daemon=True).start();print(f'S&P 500 FTMO $100k RESEARCH — PAPER ONLY — mode={RUN_MODE} — auditable research accounts — costs measured/not censored — risk/trade={RISK_PER_TRADE:.2%}',flush=True)
     state=load_state();candles=load_candles()
     while True:
         try:
             candles=update_candles(candles);newest=candles.timestamp.iloc[-1];prev=state.get('last_processed_5m')
             if prev is None or newest>pd.Timestamp(prev):
-                new_rows=candles if prev is None else candles[candles.timestamp>pd.Timestamp(prev)]
+                new_rows=(candles.tail(1) if FTMO_MODE else candles) if prev is None else candles[candles.timestamp>pd.Timestamp(prev)]
                 for _,bar in new_rows.iterrows():
+                    if FTMO_MODE:
+                        ftmo_guard.advance(state,bar.timestamp,ftmo_guard.account_balance(state,START_BALANCE))
+                        # One-position portfolio: assess worst executable intrabar price.
+                        for a in state['strategies'].values():
+                            p=a.get('position')
+                            if p:
+                                worst=max(float(bar.low),min(p['stop'],float(bar.open))) if p['side']=='LONG' else min(float(bar.high),max(p['stop'],float(bar.open)))
+                                ftmo_update(state,bar.timestamp,worst)
                     update_shadows(state,bar)
                     for key in STRATEGIES:check_position(key,state,state['strategies'][key],bar)
                     state['last_processed_5m']=bar.timestamp.isoformat()
+                    if FTMO_MODE:
+                        view=ftmo_update(state,bar.timestamp,float(bar.close))
+                        if not view['new_entries_allowed']:
+                            for k,a in state['strategies'].items():
+                                if a.get('position'):close_position(k,state,a,float(bar.close),bar.timestamp,'FTMO_'+view['entry_block_reason'])
                 snap=regime_snapshot(candles)
                 for key,cfg in STRATEGIES.items():
                     st=state['strategies'][key];st['scans']+=1;sig=signal_for(key,candles,snap)
@@ -802,7 +838,15 @@ def main():
                             decision='BLOCK_'+order_reason
                             start_shadow(state,sig,decision)
                         else:
-                            risk_ok,risk_reason=risk_permission(st)
+                            if FTMO_MODE:
+                                balance=ftmo_guard.account_balance(state,START_BALANCE)
+                                eq=ftmo_guard.equity(state,balance,float(candles.close.iloc[-1]),TAKER_FEE+SLIPPAGE_BPS/10000.0)
+                                estimated_cost=ftmo_guard.RISK_USD*float(sig.get('estimated_cost_R') or 0)
+                                risk_ok,risk_reason=ftmo_guard.permission(state,newest,balance,eq,open_position_count(state),estimated_cost)
+                                if ftmo_guard.RISK_USD/sig['stop_distance']*sig['entry'] > balance*5:
+                                    risk_ok,risk_reason=False,'NOTIONAL_LEVERAGE_CAP'
+                            else:
+                                risk_ok,risk_reason=risk_permission(st)
                             if not risk_ok:
                                 decision='BLOCK_'+risk_reason
                                 start_shadow(state,sig,decision)
@@ -813,6 +857,7 @@ def main():
                         start_shadow(state,sig,decision)
                     append_decision({**sig['features'],'decision':decision,'router_reason':sig.get('router_reason'),
                                      'router_allowed':sig.get('allowed'),'open_risk_pct':100*open_risk(state)})
+                if FTMO_MODE:ftmo_update(state,newest,float(candles.close.iloc[-1]))
                 save_state(state)
                 print(f"[STATUS] SPY={candles.close.iloc[-1]:,.0f} state={snap.get('market_state')} dir={snap.get('direction')} combined_equity=${stats(state)['balance']:.2f} trades={state['total_trades']}",flush=True)
             time.sleep(POLL_SECONDS)
