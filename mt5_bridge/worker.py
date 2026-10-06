@@ -19,7 +19,9 @@ def validate_account(a, login, server, demo_mode):
 def main():
     import MetaTrader5 as mt5
     import msvcrt
-    lock=open(Path(__file__).with_name('worker.lock'), 'a+b')
+    state_dir=Path(os.getenv('MT5_STATE_DIR',str(Path(__file__).parent)))
+    state_dir.mkdir(parents=True,exist_ok=True)
+    lock=open(state_dir/'worker.lock', 'a+b')
     lock.seek(0); lock.write(b'1'); lock.flush(); lock.seek(0)
     try: msvcrt.locking(lock.fileno(), msvcrt.LK_NBLCK, 1)
     except OSError: raise RuntimeError('Another bridge worker is already running')
@@ -30,17 +32,22 @@ def main():
     login=int(os.environ['MT5_LOGIN']); server=os.environ['MT5_SERVER']; symbol=os.environ['MT5_SYMBOL']
     path=os.environ['MT5_PATH']; token=os.environ['BRIDGE_TOKEN']
     if len(token)<32: raise RuntimeError('Token must be >=32 characters')
-    db=sqlite3.connect(Path(__file__).with_name('journal.sqlite'))
+    db=sqlite3.connect(state_dir/'journal.sqlite')
     db.execute('create table if not exists sends (id text primary key, state text)')
     db.execute('create table if not exists baselines (day text primary key, balance real)')
     headers={'Authorization':'Bearer '+token}
     print('Starting', mode, 'demo accounts only', flush=True)
     while True:
         try:
-            if not mt5.initialize(path, login=login, password=os.environ['MT5_PASSWORD'], server=server, timeout=60000): raise RuntimeError('MT5 initialize failed')
+            if not mt5.initialize(path, login=login, password=os.environ['MT5_PASSWORD'], server=server, timeout=60000, portable=os.getenv('MT5_PORTABLE','0')=='1'): raise RuntimeError('MT5 initialize failed')
             a=mt5.account_info(); t=mt5.terminal_info()
             if not a or not t or not t.connected: raise RuntimeError('MT5 disconnected')
             validate_account(a, login, server, mt5.ACCOUNT_TRADE_MODE_DEMO)
+            if symbol=='AUTO':
+                import re
+                matches=[s.name for s in (mt5.symbols_get() or []) if re.fullmatch(r'US500(?:\.cash)?',s.name,re.I)]
+                if len(matches)!=1: raise RuntimeError('Set MT5_SYMBOL explicitly; US500 symbol is not unique')
+                symbol=matches[0]
             if not mt5.symbol_select(symbol, True): raise RuntimeError('Unknown broker symbol')
             rates=mt5.copy_rates_from_pos(symbol, mt5.TIMEFRAME_M5, 1, 12000)
             if rates is None or len(rates)<600: raise RuntimeError('Load more M5 history in MT5')
