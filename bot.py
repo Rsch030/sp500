@@ -99,9 +99,10 @@ def load_state():
 def fetch_candles(days):
     days = min(max(int(days), 1), 59)
     now = utc_now()
+    yf.config.debug.hide_exceptions = False
     raw = yf.Ticker(SYMBOL).history(start=now-timedelta(days=days), end=now,
         interval='5m', prepost=False, auto_adjust=False, actions=False,
-        raise_errors=True, timeout=30)
+        timeout=30)
     if raw is None or raw.empty:
         raise RuntimeError(f'No market data received for {SYMBOL}')
     d = raw.rename(columns=str.lower).reset_index()
