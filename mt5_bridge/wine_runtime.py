@@ -78,7 +78,7 @@ def main():
             cfg.parent.mkdir(parents=True,exist_ok=True)
             import configparser, io
             raw=cfg.read_bytes() if cfg.exists() else b''
-            encoding='utf-16' if raw.startswith((b'\xff\xfe',b'\xfe\xff')) else 'utf-8-sig'
+            encoding='utf-16' if raw.startswith((b'\xff\xfe',b'\xfe\xff')) else ('utf-8-sig' if raw else 'utf-16')
             settings=configparser.ConfigParser(interpolation=None,strict=False)
             settings.optionxform=str
             if raw: settings.read_string(raw.decode(encoding))
@@ -88,7 +88,8 @@ def main():
             # The worker enforces the fixed demo identity before any order.
             settings.set('Experts','Account','0')
             out=io.StringIO();settings.write(out,space_around_delimiters=False)
-            cfg.write_text(out.getvalue(),encoding=encoding)
+            cfg.write_bytes(out.getvalue().replace('\n','\r\n').encode(encoding))
+            print('MT5 demo config: encoding=',encoding,'existing_bytes=',len(raw),'Experts.Enabled=1',flush=True)
             cfg.chmod(0o600)
             stage('DEMO_TERMINAL_CONFIGURED')
         stage('CONNECTING_MT5')

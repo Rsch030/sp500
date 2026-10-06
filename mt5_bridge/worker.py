@@ -55,7 +55,18 @@ def main():
     logged_connection=False
     while True:
         try:
-            if not mt5.initialize(path, login=login, password=os.environ['MT5_PASSWORD'], server=server, timeout=60000, portable=os.getenv('MT5_PORTABLE','0')=='1'): raise RuntimeError('MT5 initialize failed; code='+str(mt5.last_error()[0]))
+            if not mt5.initialize(path, login=login, password=os.environ['MT5_PASSWORD'], server=server, timeout=60000, portable=os.getenv('MT5_PORTABLE','0')=='1'):
+                try:
+                    files=sorted((Path(path).parent/'Logs').glob('*.log'),key=lambda p:p.stat().st_mtime)
+                    if files:
+                        raw=files[-1].read_bytes()
+                        text=raw.decode('utf-16' if raw.startswith(b'\xff\xfe') else 'utf-16-le',errors='replace')
+                        for line in text.splitlines()[-25:]:
+                            if any(k in line.lower() for k in ('terminal','error','failed','python')):
+                                for secret in (os.environ['MT5_PASSWORD'],token): line=line.replace(secret,'[REDACTED]')
+                                print('MT5 diagnostic:',line[-600:],flush=True)
+                except OSError: pass
+                raise RuntimeError('MT5 initialize failed; code='+str(mt5.last_error()[0]))
             a=mt5.account_info(); t=mt5.terminal_info()
             if not a or not t or not t.connected: raise RuntimeError('MT5 disconnected')
             validate_account(a, login, server, mt5.ACCOUNT_TRADE_MODE_DEMO)
