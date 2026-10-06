@@ -76,7 +76,19 @@ def main():
             # common.ini is MT5's default startup configuration in portable mode.
             cfg=terminal.parent/'config/common.ini'
             cfg.parent.mkdir(parents=True,exist_ok=True)
-            cfg.write_text('[Common]\nLogin=1514838728\nServer=FTMO-Demo\nKeepPrivate=0\n[Experts]\nEnabled=1\nAllowLiveTrading=1\nAccount=1\nProfile=1\n',encoding='utf-16')
+            import configparser, io
+            raw=cfg.read_bytes() if cfg.exists() else b''
+            encoding='utf-16' if raw.startswith((b'\xff\xfe',b'\xfe\xff')) else 'utf-8-sig'
+            settings=configparser.ConfigParser(interpolation=None,strict=False)
+            settings.optionxform=str
+            if raw: settings.read_string(raw.decode(encoding))
+            if not settings.has_section('Experts'): settings.add_section('Experts')
+            settings.set('Experts','Enabled','1')
+            settings.set('Experts','AllowLiveTrading','1')
+            # The worker enforces the fixed demo identity before any order.
+            settings.set('Experts','Account','0')
+            out=io.StringIO();settings.write(out,space_around_delimiters=False)
+            cfg.write_text(out.getvalue(),encoding=encoding)
             cfg.chmod(0o600)
             stage('DEMO_TERMINAL_CONFIGURED')
         stage('CONNECTING_MT5')
