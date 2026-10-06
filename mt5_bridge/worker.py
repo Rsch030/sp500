@@ -55,7 +55,7 @@ def main():
     logged_connection=False
     while True:
         try:
-            if not mt5.initialize(path, login=login, password=os.environ['MT5_PASSWORD'], server=server, timeout=60000, portable=os.getenv('MT5_PORTABLE','0')=='1'): raise RuntimeError('MT5 initialize failed')
+            if not mt5.initialize(path, login=login, password=os.environ['MT5_PASSWORD'], server=server, timeout=60000, portable=os.getenv('MT5_PORTABLE','0')=='1'): raise RuntimeError('MT5 initialize failed; code='+str(mt5.last_error()[0]))
             a=mt5.account_info(); t=mt5.terminal_info()
             if not a or not t or not t.connected: raise RuntimeError('MT5 disconnected')
             validate_account(a, login, server, mt5.ACCOUNT_TRADE_MODE_DEMO)
