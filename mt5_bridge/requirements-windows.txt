@@ -1,0 +1,4 @@
+MetaTrader5>=5.0.45,<6
+requests==2.32.3
+python-dotenv>=1.0,<2
+tzdata>=2025.1

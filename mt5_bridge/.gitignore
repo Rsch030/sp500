@@ -1,0 +1,5 @@
+.env
+*.log
+*.lock
+*.sqlite*
+__pycache__/
