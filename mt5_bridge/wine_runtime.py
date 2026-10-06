@@ -32,7 +32,15 @@ def main():
         prefix=Path(os.environ['WINEPREFIX'])
         seed=Path('/opt/wine-seed')
         if not (prefix/'system.reg').exists() and seed.exists() and prefix!=seed:
-            stage('PREPARING_TERMINAL');shutil.copytree(seed,prefix,dirs_exist_ok=True,symlinks=True)
+            # Wine 11 prefixes contain build-host-specific system state. Create
+            # native DLLs/registry on the actual runtime host, then reuse only
+            # the already installed applications (verified with MT5 portable).
+            stage('INITIALIZING_WINE');run([WINE,'wineboot.exe','-u'],120)
+            stage('PREPARING_TERMINAL')
+            shutil.copytree(seed/'drive_c/Python312',prefix/'drive_c/Python312',dirs_exist_ok=True,symlinks=True)
+            for installed in (seed/'drive_c/Program Files').glob('*/terminal64.exe'):
+                destination=prefix/'drive_c/Program Files'/installed.parent.name
+                shutil.copytree(installed.parent,destination,dirs_exist_ok=True,symlinks=True)
         if not (prefix/'system.reg').exists():
             stage('INITIALIZING_WINE'); run([WINE,'wineboot.exe','-u'],120)
         py=prefix/'drive_c/Python312'; exe=py/'python.exe'
