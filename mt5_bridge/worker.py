@@ -37,6 +37,7 @@ def main():
     db.execute('create table if not exists baselines (day text primary key, balance real)')
     headers={'Authorization':'Bearer '+token}
     print('Starting', mode, 'demo accounts only', flush=True)
+    logged_connection=False
     while True:
         try:
             if not mt5.initialize(path, login=login, password=os.environ['MT5_PASSWORD'], server=server, timeout=60000, portable=os.getenv('MT5_PORTABLE','0')=='1'): raise RuntimeError('MT5 initialize failed')
@@ -51,6 +52,10 @@ def main():
             if not mt5.symbol_select(symbol, True): raise RuntimeError('Unknown broker symbol')
             rates=mt5.copy_rates_from_pos(symbol, mt5.TIMEFRAME_M5, 1, 12000)
             if rates is None or len(rates)<600: raise RuntimeError('Load more M5 history in MT5')
+            if not logged_connection:
+                tick=mt5.symbol_info_tick(symbol)
+                print('MT5 connected:',a.login,a.server,symbol,'closed_bar_age_seconds=',round(time.time()-int(rates[-1]['time'])-300),'tick_age_seconds=',round(time.time()-tick.time) if tick else None,flush=True)
+                logged_connection=True
             bars=[{'timestamp':int(r['time'])+300, **{k:float(r[k]) for k in ['open','high','low','close']}, 'volume':float(r['tick_volume'])} for r in rates]
             account={'balance':a.balance,'equity':a.equity,'currency':a.currency,'demo':True}
             resp=requests.post(url+'/bridge/feed',headers=headers,json={'symbol':symbol,'bars':bars,'account':account,'mode':mode},timeout=45)
