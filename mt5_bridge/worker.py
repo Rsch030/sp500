@@ -1,11 +1,24 @@
 """Windows-only polling bridge. Demo-only, dry-run by default, at-most-once send."""
 import os, time, sqlite3, math
-from datetime import datetime
+from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 from pathlib import Path
 import requests
 from dotenv import load_dotenv
 load_dotenv(Path(__file__).with_name('.env'))
+
+def broker_timestamp_utc(value, time_format='UTC'):
+    """FTMO server time follows GMT+2 plus US DST; reject ambiguous transitions."""
+    value=int(value)
+    if time_format=='UTC': return value
+    if time_format!='FTMO_SERVER': raise ValueError('Unsupported MT5_TIME_FORMAT')
+    candidates=[]
+    for hours in (2,3):
+        utc=value-hours*3600
+        dst=datetime.fromtimestamp(utc,timezone.utc).astimezone(ZoneInfo('America/New_York')).dst()
+        if hours==2+int(bool(dst and dst.total_seconds())): candidates.append(utc)
+    if len(candidates)!=1: raise ValueError('Ambiguous or nonexistent FTMO server timestamp')
+    return candidates[0]
 
 def volume_for(risk, loss_one_lot, step):
     if not all(math.isfinite(x) and x > 0 for x in [risk,loss_one_lot,step]): raise ValueError('Invalid sizing')
@@ -29,6 +42,8 @@ def main():
     if not url.startswith('https://'): raise RuntimeError('HTTPS required')
     mode=os.getenv('BRIDGE_MODE','DRY_RUN')
     if mode not in ('DRY_RUN','DEMO'): raise RuntimeError('Only DRY_RUN or DEMO allowed')
+    time_format=os.getenv('MT5_TIME_FORMAT','UTC')
+    if time_format not in ('UTC','FTMO_SERVER'): raise RuntimeError('Unsupported MT5_TIME_FORMAT')
     login=int(os.environ['MT5_LOGIN']); server=os.environ['MT5_SERVER']; symbol=os.environ['MT5_SYMBOL']
     path=os.environ['MT5_PATH']; token=os.environ['BRIDGE_TOKEN']
     if len(token)<32: raise RuntimeError('Token must be >=32 characters')
@@ -54,9 +69,9 @@ def main():
             if rates is None or len(rates)<600: raise RuntimeError('Load more M5 history in MT5')
             if not logged_connection:
                 tick=mt5.symbol_info_tick(symbol)
-                print('MT5 connected:',a.login,a.server,symbol,'closed_bar_age_seconds=',round(time.time()-int(rates[-1]['time'])-300),'tick_age_seconds=',round(time.time()-tick.time) if tick else None,flush=True)
+                print('MT5 connected:',a.login,a.server,symbol,'closed_bar_age_seconds=',round(time.time()-int(rates[-1]['time'])-300),'tick_age_seconds=',round(time.time()-tick.time) if tick else None,'time_format=',time_format,'utc_bar_age_seconds=',round(time.time()-broker_timestamp_utc(rates[-1]['time'],time_format)-300),flush=True)
                 logged_connection=True
-            bars=[{'timestamp':int(r['time'])+300, **{k:float(r[k]) for k in ['open','high','low','close']}, 'volume':float(r['tick_volume'])} for r in rates]
+            bars=[{'timestamp':broker_timestamp_utc(r['time'],time_format)+300, **{k:float(r[k]) for k in ['open','high','low','close']}, 'volume':float(r['tick_volume'])} for r in rates]
             account={'balance':a.balance,'equity':a.equity,'currency':a.currency,'demo':True}
             resp=requests.post(url+'/bridge/feed',headers=headers,json={'symbol':symbol,'bars':bars,'account':account,'mode':mode},timeout=45)
             resp.raise_for_status(); sig=resp.json()
@@ -74,7 +89,7 @@ def main():
                 if a.equity<=base-1000 or a.equity<=95000: continue
                 if not a.trade_allowed or not a.trade_expert or not t.trade_allowed or t.tradeapi_disabled: raise RuntimeError('MT5 algo/Python trading disabled')
                 info=mt5.symbol_info(symbol); tick=mt5.symbol_info_tick(symbol)
-                if not info or not tick or not 0<=time.time()-tick.time<=30: continue
+                if not info or not tick or not 0<=time.time()-broker_timestamp_utc(tick.time,time_format)<=30: continue
                 buy=sig['side']=='LONG'; typ=mt5.ORDER_TYPE_BUY if buy else mt5.ORDER_TYPE_SELL
                 price=tick.ask if buy else tick.bid; dist=float(sig['distance']); rr=float(sig['rr'])
                 if not all(math.isfinite(x) and x>0 for x in [price,dist,rr,float(sig['reference'])]): continue

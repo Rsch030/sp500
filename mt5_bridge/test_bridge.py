@@ -3,10 +3,27 @@ from types import SimpleNamespace
 from unittest.mock import patch
 os.environ['BRIDGE_TOKEN']='t'*48
 os.environ['MT5_SYMBOL']='US500.test'
-from mt5_bridge.worker import volume_for, validate_account
+from mt5_bridge.worker import volume_for, validate_account, broker_timestamp_utc
 from mt5_bridge.server import app
 
 class Tests(unittest.TestCase):
+    def test_ftmo_server_time_tracks_us_dst(self):
+        from datetime import datetime, timezone
+        for day,hours in [('2026-01-06',2),('2026-03-12',3),('2026-10-06',3),('2026-11-06',2)]:
+            utc=int(datetime.fromisoformat(day+'T15:00:00').replace(tzinfo=timezone.utc).timestamp())
+            self.assertEqual(broker_timestamp_utc(utc+hours*3600,'FTMO_SERVER'),utc)
+            self.assertEqual(broker_timestamp_utc(utc,'UTC'),utc)
+    def test_ftmo_ambiguous_and_missing_times_blocked(self):
+        from datetime import datetime, timezone
+        for text in ['2026-11-01T08:30:00','2026-03-08T09:30:00']:
+            value=int(datetime.fromisoformat(text).replace(tzinfo=timezone.utc).timestamp())
+            with self.assertRaises(ValueError): broker_timestamp_utc(value,'FTMO_SERVER')
+    def test_ftmo_conversion_does_not_refresh_old_data(self):
+        from datetime import datetime, timezone
+        now=int(datetime(2026,10,6,15,tzinfo=timezone.utc).timestamp())
+        converted=broker_timestamp_utc(now-3600+10800,'FTMO_SERVER')
+        self.assertEqual(now-converted,3600)
+
     def test_real_or_other_account_blocked(self):
         a=SimpleNamespace(login=123,server='Demo',trade_mode=0,currency='USD')
         validate_account(a,123,'Demo',0)
