@@ -3,6 +3,7 @@ import os, sys, time, json, signal, subprocess, zipfile, shutil, socket
 from pathlib import Path
 
 ROOT=Path('/data'); STATE=ROOT/'runtime-state.json'
+WINE=next((p for p in ('/opt/wine-stable/bin/wine64','/opt/wine-stable/bin/wine','/usr/lib/wine/wine64') if Path(p).exists()),'/opt/wine-stable/bin/wine')
 def stage(name):
     print("[MT5 runtime]",name,flush=True)
     tmp=STATE.with_suffix('.tmp');tmp.write_text(json.dumps({'stage':name,'updated_at':time.time(),'mode':os.getenv('BRIDGE_MODE','DRY_RUN')}));tmp.replace(STATE)
@@ -33,7 +34,7 @@ def main():
         if not (prefix/'system.reg').exists() and seed.exists() and prefix!=seed:
             stage('PREPARING_TERMINAL');shutil.copytree(seed,prefix,dirs_exist_ok=True,symlinks=True)
         if not (prefix/'system.reg').exists():
-            stage('INITIALIZING_WINE'); run(['/usr/lib/wine/wine64','wineboot.exe','-u'],120)
+            stage('INITIALIZING_WINE'); run([WINE,'wineboot.exe','-u'],120)
         py=prefix/'drive_c/Python312'; exe=py/'python.exe'
         if not exe.exists():
             py.mkdir(parents=True,exist_ok=True)
@@ -42,13 +43,13 @@ def main():
         marker=py/'bridge-ready'
         if not marker.exists():
             stage('INSTALLING_WINDOWS_PYTHON_PACKAGES')
-            run(['/usr/lib/wine/wine64',str(exe),'Z:\\opt\\installers\\get-pip.py'],240)
-            run(['/usr/lib/wine/wine64',str(exe),'-m','pip','install','-r','Z:\\app\\mt5_bridge\\requirements-windows.txt'],360)
+            run([WINE,str(exe),'Z:\\opt\\installers\\get-pip.py'],240)
+            run([WINE,str(exe),'-m','pip','install','-r','Z:\\app\\mt5_bridge\\requirements-windows.txt'],360)
             marker.touch()
         terminals=list((prefix/'drive_c/Program Files').glob('*/terminal64.exe'))
         if len(terminals)!=1:
             stage('INSTALLING_FTMO_MT5')
-            proc=subprocess.Popen(['/usr/lib/wine/wine64','/opt/installers/ftmo5setup.exe','/auto'],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+            proc=subprocess.Popen([WINE,'/opt/installers/ftmo5setup.exe','/auto'],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
             deadline=time.monotonic()+300
             while time.monotonic()<deadline:
                 terminals=list((prefix/'drive_c/Program Files').glob('*/terminal64.exe'))
@@ -58,7 +59,7 @@ def main():
             run(['wineserver','-k'],30)
         terminal=terminals[0]
         stage('CHECKING_WINDOWS_IMPORTS')
-        run(['/usr/lib/wine/wine64',str(exe),'-c','import numpy, MetaTrader5, requests; print("Windows imports OK", numpy.__version__, MetaTrader5.__version__, flush=True)'],60)
+        run([WINE,str(exe),'-c','import numpy, MetaTrader5, requests; print("Windows imports OK", numpy.__version__, MetaTrader5.__version__, flush=True)'],60)
         if os.getenv('BOOTSTRAP_ONLY')=='1':
             stage('IMAGE_READY');stop()
         os.environ['MT5_PATH']='C:\\'+str(terminal.relative_to(prefix/'drive_c')).replace('/','\\')
@@ -74,7 +75,11 @@ def main():
                 raise RuntimeError('Demo terminal activation requires the verified FTMO account')
             # Let the Python API perform the previously verified terminal launch.
             # common.ini is MT5's default startup configuration in portable mode.
-            cfg=terminal.parent/'config/common.ini'
+            # Reuse the installer directory's actual case on Linux; Windows
+            # directory lookups cannot reliably distinguish Config and config.
+            config_dirs=[p for p in terminal.parent.iterdir() if p.is_dir() and p.name.lower()=='config']
+            if len(config_dirs)>1: raise RuntimeError('Duplicate MT5 configuration directories')
+            cfg=(config_dirs[0] if config_dirs else terminal.parent/'Config')/'common.ini'
             cfg.parent.mkdir(parents=True,exist_ok=True)
             import configparser, io
             raw=cfg.read_bytes() if cfg.exists() else b''
@@ -94,7 +99,7 @@ def main():
             stage('DEMO_TERMINAL_CONFIGURED')
         stage('CONNECTING_MT5')
         # Windows Python needs Windows paths even when launched from Linux.
-        worker=subprocess.Popen(['/usr/lib/wine/wine64',str(exe),'Z:\\app\\mt5_bridge\\worker.py'])
+        worker=subprocess.Popen([WINE,str(exe),'Z:\\app\\mt5_bridge\\worker.py'])
         processes.append(worker)
         while True:
             if worker.poll() is not None: raise RuntimeError('Windows worker exited')
