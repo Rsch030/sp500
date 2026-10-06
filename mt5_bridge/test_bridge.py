@@ -5,8 +5,63 @@ os.environ['BRIDGE_TOKEN']='t'*48
 os.environ['MT5_SYMBOL']='US500.test'
 from mt5_bridge.worker import volume_for, validate_account, broker_timestamp_utc
 from mt5_bridge.server import app
+from mt5_bridge.markets import market_symbols
+from mt5_bridge.worker import poll_symbol
 
 class Tests(unittest.TestCase):
+    def test_market_allowlist(self):
+        self.assertEqual(market_symbols({'MT5_SYMBOLS':'US500.cash,BTCUSD'}),['US500.cash','BTCUSD'])
+        self.assertEqual(market_symbols({'MT5_SYMBOL':'AUTO'}),['AUTO'])
+        for value in ['BTCUSD,BTCUSD','US500.cash,ETHUSD','BTCUSD,','US500,US500.cash,BTCUSD']:
+            with self.assertRaises(ValueError): market_symbols({'MT5_SYMBOLS':value})
+
+    def test_interleaved_markets_have_distinct_signals_and_freshness(self):
+        from mt5_bridge.server import status
+        client=app.test_client(); now=int(time.time())-10
+        bars=[dict(timestamp=now-(599-i)*300,open=100000,high=100002,low=99998,close=100001,volume=100) for i in range(600)]
+        headers={'Authorization':'Bearer '+'t'*48}
+        signal={'signal':'LONG','allowed':True,'entry':100001,'stop_distance':1000}
+        with patch.dict(os.environ,{'MT5_SYMBOLS':'US500.cash,BTCUSD'}),patch('mt5_bridge.server.bot.signal_for',return_value=signal),patch('mt5_bridge.server.bot.regime_snapshot',return_value={}):
+            us=client.post('/bridge/feed',json={'symbol':'US500.cash','bars':bars},headers=headers).json
+            btc=client.post('/bridge/feed',json={'symbol':'BTCUSD','bars':bars},headers=headers).json
+            again=client.post('/bridge/feed',json={'symbol':'US500.cash','bars':bars},headers=headers).json
+            self.assertEqual(us['id'],again['id']); self.assertNotEqual(us['id'],btc['id'])
+            self.assertEqual(client.post('/bridge/feed',json={'symbol':'ETHUSD','bars':bars},headers=headers).status_code,409)
+            status['markets']['US500.cash']['last_seen']=time.time()-100
+            result=client.get('/bridge/status',headers=headers).json
+            self.assertFalse(result['markets']['US500.cash']['connected'])
+            self.assertTrue(result['markets']['BTCUSD']['connected'])
+
+    def test_malformed_feed_returns_400(self):
+        c=app.test_client(); h={'Authorization':'Bearer '+'t'*48}
+        self.assertEqual(c.post('/bridge/feed',json=[],headers=h).status_code,400)
+        self.assertEqual(c.post('/bridge/feed',json={'symbol':'US500.test','bars':None},headers=h).status_code,400)
+
+    def test_two_markets_share_exposure_and_uncertain_order_guard(self):
+        import sqlite3
+        from unittest.mock import Mock
+        now=int(time.time()); positions=[]
+        a=SimpleNamespace(login=123,server='Demo',currency='USD',trade_mode=0,trade_allowed=True,trade_expert=True,balance=100000,equity=100000,margin_free=100000)
+        t=SimpleNamespace(connected=True,trade_allowed=True,tradeapi_disabled=False)
+        info=SimpleNamespace(trade_tick_size=.01,digits=2,volume_step=.01,volume_min=.01,volume_max=10,filling_mode=1)
+        rates=[dict(time=now-300-(599-i)*300,open=100000,high=100002,low=99998,close=100001,tick_volume=100) for i in range(600)]
+        m=SimpleNamespace(ACCOUNT_TRADE_MODE_DEMO=0,TIMEFRAME_M5=5,ORDER_TYPE_BUY=0,ORDER_TYPE_SELL=1,ORDER_FILLING_FOK=0,ORDER_FILLING_IOC=1,TRADE_ACTION_DEAL=1,ORDER_TIME_GTC=0,TRADE_RETCODE_DONE=10009,TRADE_RETCODE_DONE_PARTIAL=10010,
+            account_info=lambda:a,terminal_info=lambda:t,symbol_select=lambda *args:True,copy_rates_from_pos=lambda *args:rates,symbol_info_tick=lambda s:SimpleNamespace(time=now,ask=100000,bid=99999),positions_get=lambda:positions,orders_get=lambda:[],symbol_info=lambda s:info,order_calc_profit=lambda *args:-1000,order_calc_margin=lambda *args:100,order_check=lambda r:SimpleNamespace(retcode=0))
+        def send(req):
+            positions.append(req); return SimpleNamespace(retcode=10009)
+        m.order_send=Mock(side_effect=send)
+        def response(*args,**kwargs):
+            symbol=kwargs['json']['symbol']
+            return SimpleNamespace(raise_for_status=lambda:None,json=lambda:{'id':symbol,'symbol':symbol,'side':'LONG','reference':100000,'distance':100,'rr':2,'expires_at':time.time()+60})
+        db=sqlite3.connect(':memory:'); db.execute('create table sends (id text primary key,state text)');db.execute('create table baselines (day text primary key,balance real)')
+        with patch('mt5_bridge.worker.requests.post',side_effect=response):
+            for symbol in ['US500.cash','BTCUSD']: poll_symbol(m,symbol,123,'Demo','https://example.test',{},'DEMO','UTC',db,set())
+            self.assertEqual(m.order_send.call_count,1)
+            self.assertEqual(positions[0]['symbol'],'US500.cash')
+            positions.clear(); db.execute("insert into sends values ('unknown','UNCERTAIN')");db.commit()
+            with self.assertRaisesRegex(RuntimeError,'Uncertain prior order'):
+                poll_symbol(m,'BTCUSD',123,'Demo','https://example.test',{},'DEMO','UTC',db,set())
+            self.assertEqual(m.order_send.call_count,1)
     def test_ftmo_server_time_tracks_us_dst(self):
         from datetime import datetime, timezone
         for day,hours in [('2026-01-06',2),('2026-03-12',3),('2026-10-06',3),('2026-11-06',2)]:

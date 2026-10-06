@@ -5,10 +5,11 @@ from pathlib import Path
 import pandas as pd
 from flask import Flask, request, jsonify
 import bot
+from mt5_bridge.markets import market_symbols
 
 app = Flask(__name__)
 app.config['MAX_CONTENT_LENGTH'] = 4 * 1024 * 1024
-status = {'connected': False, 'last_seen': None}
+status = {'connected': False, 'last_seen': None, 'markets': {}}
 
 def authorized():
     token = os.environ.get('BRIDGE_TOKEN', '')
@@ -29,21 +30,25 @@ def runtime_status():
 @app.get('/bridge/status')
 def bridge_status():
     if not authorized(): return {'error': 'unauthorized'}, 401
-    return {**status, 'connected': bool(status['last_seen'] and time.time()-status['last_seen'] < 90)}
+    markets={k:{**v,'connected':time.time()-v['last_seen']<90} for k,v in status['markets'].items()}
+    return {**status, 'markets':markets,'connected': bool(status['last_seen'] and time.time()-status['last_seen'] < 90)}
 
 @app.post('/bridge/feed')
 def feed():
     if not authorized(): return {'error': 'unauthorized'}, 401
-    d = request.get_json()
-    symbol = os.environ.get('MT5_SYMBOL', '')
-    if symbol=='AUTO':
+    d = request.get_json(silent=True)
+    if not isinstance(d,dict): return {'error':'JSON object required'},400
+    symbols = market_symbols(os.environ)
+    symbol = d.get('symbol','')
+    if symbols==['AUTO']:
         import re
         received=d.get('symbol','')
         if not re.fullmatch(r'US500(?:\.cash)?',received,re.I): return {'error':'symbol mismatch'},409
-        if status.get('symbol') and status['symbol']!=received: return {'error':'symbol changed'},409
-        symbol=received
-    if not symbol or d.get('symbol') != symbol: return {'error': 'symbol mismatch'}, 409
+        if status.get('auto_symbol') and status['auto_symbol']!=received: return {'error':'symbol changed'},409
+        status['auto_symbol']=received
+    elif symbol not in symbols: return {'error': 'symbol mismatch'}, 409
     rows = d.get('bars', [])
+    if not isinstance(rows,list): return {'error':'Candles must be a list'},400
     if not 600 <= len(rows) <= 20000: return {'error': 'Need 600-20000 closed M5 bars'}, 400
     c = pd.DataFrame(rows)
     try:
@@ -61,6 +66,7 @@ def feed():
     sig = bot.signal_for(key, c, bot.regime_snapshot(c))
     status.update(connected=True, last_seen=time.time(), symbol=symbol,
                   account=d.get('account', {}), mode=d.get('mode'), strategy=key)
+    status['markets'][symbol]={'last_seen':time.time(),'strategy':key,'mode':d.get('mode'),'last_candle':c.timestamp.iloc[-1].timestamp()}
     if not sig: return {'signal': None, 'reason': 'WARMUP_LOAD_MORE_HISTORY'}
     if not sig.get('signal') or not sig.get('allowed'): return {'signal': None, 'reason': sig.get('router_reason', sig.get('reason'))}
     stamp = c.timestamp.iloc[-1].timestamp()
