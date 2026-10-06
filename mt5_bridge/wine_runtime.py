@@ -68,6 +68,17 @@ def main():
         os.environ.setdefault('BRIDGE_URL','https://'+os.environ.get('RAILWAY_PUBLIC_DOMAIN','mt5-bridge-production-2160.up.railway.app'))
         while not all(os.environ.get(k) for k in ('MT5_LOGIN','MT5_SERVER','MT5_PASSWORD')):
             stage('NEED_MT5_CREDENTIALS');time.sleep(30)
+        if os.getenv('BRIDGE_MODE')=='DEMO':
+            # Official MT5 /config startup mechanism. Only the verified FTMO demo profile.
+            if os.getenv('MT5_LOGIN')!='1514838728' or os.getenv('MT5_SERVER')!='FTMO-Demo':
+                raise RuntimeError('Demo terminal activation requires the verified FTMO account')
+            password=os.environ['MT5_PASSWORD']
+            if any(c in password for c in ('\r','\n')): raise ValueError('Invalid password format')
+            cfg=prefix/'drive_c/bridge-demo.ini'
+            cfg.write_text('[Common]\nLogin=1514838728\nServer=FTMO-Demo\nPassword='+password+'\nKeepPrivate=0\n[Experts]\nEnabled=1\nAllowLiveTrading=1\nAccount=1\nProfile=1\n',encoding='utf-16')
+            cfg.chmod(0o600)
+            stage('STARTING_DEMO_TERMINAL')
+            processes.append(subprocess.Popen(['/usr/lib/wine/wine64',str(terminal),'/portable','/config:C:\\bridge-demo.ini'],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL))
         stage('CONNECTING_MT5')
         # Windows Python needs Windows paths even when launched from Linux.
         worker=subprocess.Popen(['/usr/lib/wine/wine64',str(exe),'Z:\\app\\mt5_bridge\\worker.py'])
