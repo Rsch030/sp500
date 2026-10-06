@@ -57,6 +57,8 @@ def main():
             if len(terminals)!=1: raise RuntimeError('MT5 unattended installer did not complete')
             run(['wineserver','-k'],30)
         terminal=terminals[0]
+        stage('CHECKING_WINDOWS_IMPORTS')
+        run(['/usr/lib/wine/wine64',str(exe),'-c','import numpy, MetaTrader5, requests; print("Windows imports OK", numpy.__version__, MetaTrader5.__version__, flush=True)'],60)
         if os.getenv('BOOTSTRAP_ONLY')=='1':
             stage('IMAGE_READY');stop()
         os.environ['MT5_PATH']='C:\\'+str(terminal.relative_to(prefix/'drive_c')).replace('/','\\')
