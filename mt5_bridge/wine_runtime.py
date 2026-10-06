@@ -4,10 +4,11 @@ from pathlib import Path
 
 ROOT=Path('/data'); STATE=ROOT/'runtime-state.json'
 def stage(name):
+    print("[MT5 runtime]",name,flush=True)
     tmp=STATE.with_suffix('.tmp');tmp.write_text(json.dumps({'stage':name,'updated_at':time.time(),'mode':os.getenv('BRIDGE_MODE','DRY_RUN')}));tmp.replace(STATE)
 
 def run(args,timeout=240):
-    subprocess.run(args,check=True,timeout=timeout,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+    subprocess.run(args,check=True,timeout=timeout)
 
 def main():
     ROOT.mkdir(parents=True,exist_ok=True)
