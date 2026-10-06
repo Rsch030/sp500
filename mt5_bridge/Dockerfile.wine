@@ -12,6 +12,6 @@ RUN python3 -m venv /opt/bridge-venv && /opt/bridge-venv/bin/pip install --no-ca
 RUN mkdir -p /opt/installers && curl -fL --retry 3 https://www.python.org/ftp/python/3.12.10/python-3.12.10-embed-amd64.zip -o /opt/installers/python.zip && curl -fL --retry 3 https://bootstrap.pypa.io/get-pip.py -o /opt/installers/get-pip.py && curl -fL --retry 3 https://download.terminal.free/cdn/web/ftmo.global.markets/mt5/ftmo5setup.exe -o /opt/installers/ftmo5setup.exe
 COPY bot.py ftmo_guard.py ./
 COPY mt5_bridge ./mt5_bridge
-ENV DISPLAY=:99 WINEARCH=win64 WINEPREFIX=/tmp/wine WINEDEBUG=-all DATA_DIR=/tmp/bridge-import RUNTIME_STATE=/data/runtime-state.json PYTHONUNBUFFERED=1
+ENV DISPLAY=:99 WINEARCH=win64 WINEPREFIX=/tmp/wine WINEDEBUG=-all WINEDLLOVERRIDES=mscoree,mshtml=d DATA_DIR=/tmp/bridge-import RUNTIME_STATE=/data/runtime-state.json PYTHONUNBUFFERED=1
 RUN WINEPREFIX=/opt/wine-seed BOOTSTRAP_ONLY=1 /opt/bridge-venv/bin/python -m mt5_bridge.wine_runtime
 CMD ["/opt/bridge-venv/bin/python", "-m", "mt5_bridge.wine_runtime"]
