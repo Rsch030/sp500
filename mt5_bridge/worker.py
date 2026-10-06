@@ -59,6 +59,10 @@ def main():
             a=mt5.account_info(); t=mt5.terminal_info()
             if not a or not t or not t.connected: raise RuntimeError('MT5 disconnected')
             validate_account(a, login, server, mt5.ACCOUNT_TRADE_MODE_DEMO)
+            trading_ready=bool(a.trade_allowed and a.trade_expert and t.trade_allowed and not t.tradeapi_disabled)
+            if not logged_connection:
+                print('MT5 trading permissions:', 'account=',a.trade_allowed,'experts=',a.trade_expert,'terminal=',t.trade_allowed,'python_api_disabled=',t.tradeapi_disabled,'mode=',mode,flush=True)
+            if mode=='DEMO' and not trading_ready: raise RuntimeError('MT5 algo/Python trading disabled')
             if symbol=='AUTO':
                 import re
                 matches=[s.name for s in (mt5.symbols_get() or []) if re.fullmatch(r'US500(?:\.cash)?',s.name,re.I)]
