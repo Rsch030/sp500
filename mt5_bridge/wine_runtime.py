@@ -33,7 +33,7 @@ def main():
         if not (prefix/'system.reg').exists() and seed.exists() and prefix!=seed:
             stage('PREPARING_TERMINAL');shutil.copytree(seed,prefix,dirs_exist_ok=True,symlinks=True)
         if not (prefix/'system.reg').exists():
-            stage('INITIALIZING_WINE'); run(['wineboot','-u'],120)
+            stage('INITIALIZING_WINE'); run(['/usr/lib/wine/wine64','wineboot.exe','-u'],120)
         py=prefix/'drive_c/Python312'; exe=py/'python.exe'
         if not exe.exists():
             py.mkdir(parents=True,exist_ok=True)
@@ -42,13 +42,13 @@ def main():
         marker=py/'bridge-ready'
         if not marker.exists():
             stage('INSTALLING_WINDOWS_PYTHON_PACKAGES')
-            run(['wine',str(exe),'Z:\\opt\\installers\\get-pip.py'],240)
-            run(['wine',str(exe),'-m','pip','install','-r','Z:\\app\\mt5_bridge\\requirements-windows.txt'],360)
+            run(['/usr/lib/wine/wine64',str(exe),'Z:\\opt\\installers\\get-pip.py'],240)
+            run(['/usr/lib/wine/wine64',str(exe),'-m','pip','install','-r','Z:\\app\\mt5_bridge\\requirements-windows.txt'],360)
             marker.touch()
         terminals=list((prefix/'drive_c/Program Files').glob('*/terminal64.exe'))
         if len(terminals)!=1:
             stage('INSTALLING_FTMO_MT5')
-            proc=subprocess.Popen(['wine','/opt/installers/ftmo5setup.exe','/auto'],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+            proc=subprocess.Popen(['/usr/lib/wine/wine64','/opt/installers/ftmo5setup.exe','/auto'],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
             deadline=time.monotonic()+300
             while time.monotonic()<deadline:
                 terminals=list((prefix/'drive_c/Program Files').glob('*/terminal64.exe'))
@@ -68,7 +68,7 @@ def main():
             stage('NEED_MT5_CREDENTIALS');time.sleep(30)
         stage('CONNECTING_MT5')
         # Windows Python needs Windows paths even when launched from Linux.
-        worker=subprocess.Popen(['wine',str(exe),'Z:\\app\\mt5_bridge\\worker.py'])
+        worker=subprocess.Popen(['/usr/lib/wine/wine64',str(exe),'Z:\\app\\mt5_bridge\\worker.py'])
         processes.append(worker)
         while True:
             if worker.poll() is not None: raise RuntimeError('Windows worker exited')
