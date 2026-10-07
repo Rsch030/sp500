@@ -33,6 +33,16 @@ def bridge_status():
     markets={k:{**v,'connected':time.time()-v['last_seen']<90} for k,v in status['markets'].items()}
     return {**status, 'markets':markets,'connected': bool(status['last_seen'] and time.time()-status['last_seen'] < 90)}
 
+@app.get('/bridge/risk')
+def bridge_risk():
+    if not authorized(): return {'error':'unauthorized'},401
+    try:
+        risk=json.loads(Path('/data/worker-state/ftmo-risk.json').read_text())
+        fresh=0<=time.time()-risk['updated_at']<=15
+        return {**risk,'fresh':fresh,'new_entries_allowed':fresh and risk.get('new_entries_allowed',False)}
+    except (OSError,ValueError,KeyError,TypeError):
+        return {'fresh':False,'new_entries_allowed':False,'reason':'GUARD_UNAVAILABLE'},503
+
 @app.post('/bridge/feed')
 def feed():
     if not authorized(): return {'error': 'unauthorized'}, 401

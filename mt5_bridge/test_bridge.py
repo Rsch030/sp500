@@ -74,13 +74,15 @@ class Tests(unittest.TestCase):
             symbol=kwargs['json']['symbol']
             return SimpleNamespace(raise_for_status=lambda:None,json=lambda:{'id':symbol,'symbol':symbol,'side':'LONG','reference':100000,'distance':100,'rr':2,'expires_at':time.time()+60})
         db=sqlite3.connect(':memory:'); db.execute('create table sends (id text primary key,state text)');db.execute('create table baselines (day text primary key,balance real)')
+        import threading
+        guard=SimpleNamespace(lock=threading.RLock(),check=lambda:{'new_entries_allowed':True,'protective_floor':99000},identity=lambda:(a,t))
         with patch('mt5_bridge.worker.requests.post',side_effect=response):
-            for symbol in ['US500.cash','BTCUSD']: poll_symbol(m,symbol,123,'Demo','https://example.test',{},'DEMO','UTC',db,set())
+            for symbol in ['US500.cash','BTCUSD']: poll_symbol(m,symbol,123,'Demo','https://example.test',{},'DEMO','UTC',db,set(),guard)
             self.assertEqual(m.order_send.call_count,1)
             self.assertEqual(positions[0]['symbol'],'US500.cash')
             positions.clear(); db.execute("insert into sends values ('unknown','UNCERTAIN')");db.commit()
             with self.assertRaisesRegex(RuntimeError,'Uncertain prior order'):
-                poll_symbol(m,'BTCUSD',123,'Demo','https://example.test',{},'DEMO','UTC',db,set())
+                poll_symbol(m,'BTCUSD',123,'Demo','https://example.test',{},'DEMO','UTC',db,set(),guard)
             self.assertEqual(m.order_send.call_count,1)
     def test_ftmo_server_time_tracks_us_dst(self):
         from datetime import datetime, timezone
