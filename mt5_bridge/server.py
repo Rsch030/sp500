@@ -63,10 +63,14 @@ def feed():
     except (ValueError, KeyError, TypeError): return {'error': 'Invalid candles'}, 400
     key = os.environ.get('BRIDGE_STRATEGY', 'TREND_PULLBACK')
     if key not in bot.STRATEGIES: return {'error': 'Invalid BRIDGE_STRATEGY'}, 500
-    sig = bot.signal_for(key, c, bot.regime_snapshot(c))
+    fast_pullback = key=='TREND_PULLBACK' and symbol.upper() in ('US500','US500.CASH')
+    sig = bot.signal_for(key, c, bot.regime_snapshot(c), pullback_30m_5m=fast_pullback)
+    timeframes = {'trend':'30m','confirmation':'5m'} if fast_pullback else {'trend':'1h','confirmation':'15m'}
+    if symbol not in status['markets']:
+        print('Strategy timeframes:',symbol,key,timeframes,flush=True)
     status.update(connected=True, last_seen=time.time(), symbol=symbol,
                   account=d.get('account', {}), mode=d.get('mode'), strategy=key)
-    status['markets'][symbol]={'last_seen':time.time(),'strategy':key,'mode':d.get('mode'),'last_candle':c.timestamp.iloc[-1].timestamp()}
+    status['markets'][symbol]={'last_seen':time.time(),'strategy':key,'mode':d.get('mode'),'last_candle':c.timestamp.iloc[-1].timestamp(),**timeframes}
     if not sig: return {'signal': None, 'reason': 'WARMUP_LOAD_MORE_HISTORY'}
     if not sig.get('signal') or not sig.get('allowed'): return {'signal': None, 'reason': sig.get('router_reason', sig.get('reason'))}
     stamp = c.timestamp.iloc[-1].timestamp()

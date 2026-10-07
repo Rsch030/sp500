@@ -9,6 +9,26 @@ from mt5_bridge.markets import market_symbols
 from mt5_bridge.worker import poll_symbol
 
 class Tests(unittest.TestCase):
+    def test_only_sp500_uses_30m_5m(self):
+        client=app.test_client(); now=int(time.time())-10
+        bars=[dict(timestamp=now-(599-i)*300,open=5000,high=5002,low=4998,close=5001,volume=100) for i in range(600)]
+        with patch.dict(os.environ,{'MT5_SYMBOLS':'US500.cash,BTCUSD','BRIDGE_STRATEGY':'TREND_PULLBACK'}),patch('mt5_bridge.server.bot.signal_for',return_value=None) as signal,patch('mt5_bridge.server.bot.regime_snapshot',return_value={}):
+            for symbol,expected in [('US500.cash',True),('BTCUSD',False)]:
+                client.post('/bridge/feed',json={'symbol':symbol,'bars':bars},headers={'Authorization':'Bearer '+'t'*48})
+                self.assertEqual(signal.call_args.kwargs['pullback_30m_5m'],expected)
+
+    def test_fast_pullback_uses_closed_30m_and_5m(self):
+        import pandas as pd
+        import bot
+        timestamps=pd.date_range(end='2026-10-07T13:25:00Z',periods=4000,freq='5min')
+        bars=pd.DataFrame({'timestamp':timestamps,'open':5000.,'high':5002.,'low':4998.,'close':5001.,'volume':100.})
+        with patch('bot.detect_trend_pullback',return_value=(None,'WAIT_HTF_PULLBACK_RESUMPTION',None,0)) as detector:
+            result=bot.signal_for('TREND_PULLBACK',bars,{},pullback_30m_5m=True)
+            confirmation=detector.call_args.args[1]; trend=detector.call_args.args[2]
+            self.assertEqual(confirmation.index[-1],pd.Timestamp('2026-10-07T13:25:00Z'))
+            self.assertEqual(trend.index[-1],pd.Timestamp('2026-10-07T13:00:00Z'))
+            self.assertEqual(result['reason'],'WAIT_M30_M5_PULLBACK_RESUMPTION')
+
     def test_market_allowlist(self):
         self.assertEqual(market_symbols({'MT5_SYMBOLS':'US500.cash,BTCUSD'}),['US500.cash','BTCUSD'])
         self.assertEqual(market_symbols({'MT5_SYMBOL':'AUTO'}),['AUTO'])
