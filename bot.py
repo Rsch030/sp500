@@ -380,11 +380,17 @@ def candidate_id(key,t,side,setup):
     raw=f"{key}|{pd.Timestamp(t).isoformat()}|{side}|{setup}"
     return hashlib.sha1(raw.encode()).hexdigest()[:16]
 
-def signal_for(key,c,snap):
+def signal_for(key,c,snap,pullback_30m_5m=False):
     if len(c)<600:return None
     d5,d15,d1,d4=frames(c)
     if len(d15)<200 or len(d1)<130 or len(d4)<MIN_HTF_BARS:return None
-    side,setup,dist,trigger=DETECTORS[key](d5,d15,d1,d4,snap)
+    if key=='TREND_PULLBACK' and pullback_30m_5m:
+        d30=enrich(closed_resample(c,'30min'))
+        if len(d30)<130:return None
+        side,setup,dist,trigger=detect_trend_pullback(d5,d5,d30,d4,snap)
+        setup=setup.replace('HTF_PULLBACK','M30_M5_PULLBACK')
+    else:
+        side,setup,dist,trigger=DETECTORS[key](d5,d15,d1,d4,snap)
     feat=base_features(key,side,setup,d5,d15,d1,d4,snap); feat['schema_version']='6.0'
     if not side:return {'signal':None,'time':d5.index[-1],'reason':setup,'features':feat}
     c5=d5.iloc[-1]
