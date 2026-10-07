@@ -6,7 +6,7 @@ state=Path('Z:/data/ultima-probe.json')
 def record(status, **fields):
     payload={'status':status,'updated_at':time.time(),'live_orders_enabled':False,**fields}
     tmp=state.with_suffix('.tmp'); tmp.write_text(json.dumps(payload)); tmp.replace(state)
-    print('Ultima probe:',status,flush=True)
+    print('Ultima probe:',status,'error_code=',fields.get('error_code'),flush=True)
 while True:
     if not mt5.initialize(os.environ['MT5_PATH'],login=int(os.environ['ULTIMA_LOGIN']),password=os.environ['ULTIMA_PASSWORD'],server=os.environ['ULTIMA_SERVER'],portable=True):
         record('CONNECTION_FAILED',error_code=mt5.last_error()[0]); mt5.shutdown(); time.sleep(30); continue
