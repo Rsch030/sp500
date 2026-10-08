@@ -88,6 +88,25 @@ def main():
         os.environ.setdefault('BRIDGE_URL','https://'+os.environ.get('RAILWAY_PUBLIC_DOMAIN','mt5-bridge-production-2160.up.railway.app'))
         while not all(os.environ.get(k) for k in ('MT5_LOGIN','MT5_SERVER','MT5_PASSWORD')):
             stage('NEED_MT5_CREDENTIALS');time.sleep(30)
+        # Prestart the broker's terminal using a private config, so initialize
+        # attaches to an existing process instead of starting/login in one call.
+        # Never attach an Expert or enable order placement during recovery.
+        login=os.environ['ULTIMA_LOGIN']
+        server=os.environ['ULTIMA_SERVER']
+        password=os.environ['ULTIMA_PASSWORD']
+        if not login.isdecimal() or any(c in server+password for c in ('\r','\n')):
+            raise ValueError('Invalid terminal configuration values')
+        config=prefix/'drive_c'/'ultima-readonly.ini'
+        config.write_text('[Common]\nLogin='+login+'\nServer='+server+'\nPassword='+password+
+                          '\nKeepPrivate=0\nNewsEnable=0\n[Experts]\nEnabled=0\nAllowLiveTrading=0\n',encoding='utf-16')
+        config.chmod(0o600)
+        stage('STARTING_ULTIMA_TERMINAL_READ_ONLY')
+        terminal_process=subprocess.Popen([WINE,str(terminal),'/portable','/config:C:\\ultima-readonly.ini'],
+                                          stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+        processes.append(terminal_process)
+        time.sleep(15)
+        if terminal_process.poll() is not None:
+            raise RuntimeError('Ultima terminal exited before API attachment')
         stage('CONNECTING_MT5_READ_ONLY')
         # Windows Python needs Windows paths even when launched from Linux.
         worker=subprocess.Popen([WINE,str(exe),'Z:\\app\\ultima_probe.py'])
@@ -105,3 +124,4 @@ def main():
         raise SystemExit(1)
 
 if __name__=='__main__':main()
+
