@@ -4,7 +4,7 @@ from pathlib import Path
 import MetaTrader5 as mt5
 
 state=Path('Z:/data/ultima-probe.json')
-VERSION='ultima-connect-2'
+VERSION='ultima-connect-3'
 
 def record(status, **fields):
     payload={'version':VERSION,'status':status,'updated_at':time.time(),
@@ -28,7 +28,7 @@ def diagnostics():
 
 def probe():
     record('ATTACHING_TERMINAL')
-    if not mt5.initialize(os.environ['MT5_PATH'],timeout=120000,portable=True):
+    if not mt5.initialize(os.environ['MT5_PATH'],login=int(os.environ['ULTIMA_LOGIN']),password=os.environ['ULTIMA_PASSWORD'],server=os.environ['ULTIMA_SERVER'],timeout=120000,portable=True):
         record('IPC_FAILED',error_code=mt5.last_error()[0]); diagnostics(); return
     record('AUTHENTICATING_BROKER')
     if not mt5.login(int(os.environ['ULTIMA_LOGIN']),password=os.environ['ULTIMA_PASSWORD'],

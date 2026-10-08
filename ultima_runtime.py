@@ -88,25 +88,25 @@ def main():
         os.environ.setdefault('BRIDGE_URL','https://'+os.environ.get('RAILWAY_PUBLIC_DOMAIN','mt5-bridge-production-2160.up.railway.app'))
         while not all(os.environ.get(k) for k in ('MT5_LOGIN','MT5_SERVER','MT5_PASSWORD')):
             stage('NEED_MT5_CREDENTIALS');time.sleep(30)
-        # Prestart the broker's terminal using a private config, so initialize
-        # attaches to an existing process instead of starting/login in one call.
-        # Never attach an Expert or enable order placement during recovery.
-        login=os.environ['ULTIMA_LOGIN']
-        server=os.environ['ULTIMA_SERVER']
-        password=os.environ['ULTIMA_PASSWORD']
-        if not login.isdecimal() or any(c in server+password for c in ('\r','\n')):
-            raise ValueError('Invalid terminal configuration values')
-        config=prefix/'drive_c'/'ultima-readonly.ini'
-        config.write_text('[Common]\nLogin='+login+'\nServer='+server+'\nPassword='+password+
-                          '\nKeepPrivate=0\nNewsEnable=0\n[Experts]\nEnabled=0\nAllowLiveTrading=0\n',encoding='utf-16')
-        config.chmod(0o600)
-        stage('STARTING_ULTIMA_TERMINAL_READ_ONLY')
-        terminal_process=subprocess.Popen([WINE,str(terminal),'/portable','/config:C:\\ultima-readonly.ini'],
-                                          stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
-        processes.append(terminal_process)
-        time.sleep(15)
-        if terminal_process.poll() is not None:
-            raise RuntimeError('Ultima terminal exited before API attachment')
+        # Match the working FTMO launch: let the API start the portable
+        # terminal. Edit its native common.ini rather than passing /config.
+        config_dirs=[p for p in terminal.parent.iterdir() if p.is_dir() and p.name.lower()=='config']
+        if len(config_dirs)>1: raise RuntimeError('Duplicate MT5 configuration directories')
+        cfg=(config_dirs[0] if config_dirs else terminal.parent/'Config')/'common.ini'
+        cfg.parent.mkdir(parents=True,exist_ok=True)
+        import configparser, io
+        raw=cfg.read_bytes() if cfg.exists() else b''
+        encoding='utf-16' if raw.startswith((b'\xff\xfe',b'\xfe\xff')) else ('utf-8-sig' if raw else 'utf-16')
+        settings=configparser.ConfigParser(interpolation=None,strict=False)
+        settings.optionxform=str
+        if raw: settings.read_string(raw.decode(encoding))
+        if not settings.has_section('Experts'): settings.add_section('Experts')
+        settings.set('Experts','Enabled','1')
+        settings.set('Experts','AllowLiveTrading','0')
+        settings.set('Experts','Account','1')
+        out=io.StringIO();settings.write(out,space_around_delimiters=False)
+        cfg.write_bytes(out.getvalue().replace('\n','\r\n').encode(encoding));cfg.chmod(0o600)
+        stage('READ_ONLY_TERMINAL_CONFIGURED')
         stage('CONNECTING_MT5_READ_ONLY')
         # Windows Python needs Windows paths even when launched from Linux.
         worker=subprocess.Popen([WINE,str(exe),'Z:\\app\\ultima_probe.py'])
