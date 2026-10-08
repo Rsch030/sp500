@@ -63,6 +63,8 @@ STRATEGIES = {
  'BREAKOUT': {'label':'Breakout / Retest','rr':2.5,'stop_atr':1.70,'max_hours':8,'enabled':True},
  'TREND_PULLBACK': {'label':'HTF Trend Continuation','rr':2.5,'stop_atr':1.65,'max_hours':8,'enabled':True},
  'MEAN_REVERSION': {'label':'Range Mean Reversion','rr':1.8,'stop_atr':1.45,'max_hours':5,'enabled':True},
+ 'BOLLINGER_SQUEEZE': {'label':'Volatility Squeeze Breakout','rr':2.0,'stop_atr':1.5,'max_hours':6,'enabled':True},
+ 'OPENING_RANGE_BREAKOUT': {'label':'Opening Range Breakout','rr':2.0,'stop_atr':1.3,'max_hours':4,'enabled':True},
 }
 
 
@@ -248,7 +250,7 @@ def score_setup(key,side,trigger,ctx,snap):
     """Transparent 0-100 score. Components are logged; weights are hypotheses, not fitted to the 8 legacy trades."""
     direction=snap.get('direction'); strength=snap.get('strength'); state=snap.get('market_state')
     trend=20 if direction==side.replace('LONG','BULL').replace('SHORT','BEAR') else 10 if direction=='NEUTRAL' else 2
-    regime=20 if ((key in {'BREAKOUT','MOMENTUM'} and state in {'EXPANSION','TREND'}) or
+    regime=20 if ((key in {'BREAKOUT','MOMENTUM','BOLLINGER_SQUEEZE','OPENING_RANGE_BREAKOUT'} and state in {'EXPANSION','TREND'}) or
                   (key in {'EMA_SCALP','TREND_PULLBACK'} and state in {'TREND','TRANSITION','EXPANSION'}) or
                   (key=='SMC_SWEEP' and state in {'TRANSITION','RANGE_CHOP','CONTRACTION'}) or
                   (key=='MEAN_REVERSION' and state=='RANGE_CHOP')) else 7
@@ -349,8 +351,45 @@ def detect_mean_reversion(d5,d15,d1,d4,snap):
     return None,'WAIT_CONFIRMED_RANGE_EXTREME',None,0
 
 
+def detect_bollinger_squeeze(d5,d15,d1,d4,snap):
+    if len(d15)<60: return None,'WAIT_BOLLINGER_SQUEEZE',None,0
+    c,p=d15.iloc[-1],d15.iloc[-2]
+    mid=d15.close.rolling(20).mean(); sd=d15.close.rolling(20).std()
+    width=(4*sd/mid.replace(0,np.nan))
+    if not finite(width.iloc[-1]) or not finite(width.iloc[-2]): return None,'WAIT_BOLLINGER_SQUEEZE',None,0
+    squeezed=width.iloc[-2]<=width.iloc[-52:-2].min()*1.10
+    up=mid.iloc[-2]+2*sd.iloc[-2]; lo=mid.iloc[-2]-2*sd.iloc[-2]
+    vol=float(c.volume_ratio) if finite(c.volume_ratio) else 0.0
+    a=float(c.atr) if finite(c.atr) else 0.0
+    if not squeezed or a<=0: return None,'WAIT_BOLLINGER_SQUEEZE',None,0
+    if c.close>up and vol>=1.0 and snap.get('direction')!='BEAR' and c.close>c.open:
+        return 'LONG','BOLLINGER_SQUEEZE_BREAKOUT',float(a*1.5),20
+    if c.close<lo and vol>=1.0 and snap.get('direction')!='BULL' and c.close<c.open:
+        return 'SHORT','BOLLINGER_SQUEEZE_BREAKOUT',float(a*1.5),20
+    return None,'WAIT_BOLLINGER_SQUEEZE',None,0
+
+def detect_opening_range_breakout(d5,d15,d1,d4,snap):
+    if len(d5)<60: return None,'WAIT_OPENING_RANGE_BREAKOUT',None,0
+    idx=d5.index.tz_convert('America/New_York') if d5.index.tz is not None else d5.index.tz_localize('UTC').tz_convert('America/New_York')
+    c=d5.iloc[-1]; now=idx[-1]
+    if not (10,0)<=(now.hour,now.minute)<(12,0): return None,'WAIT_OPENING_RANGE_BREAKOUT',None,0
+    day=now.normalize()
+    mask=(idx>=day+pd.Timedelta(hours=9,minutes=30))&(idx<day+pd.Timedelta(hours=10))
+    rng=d5[mask]
+    if len(rng)<6: return None,'WAIT_OPENING_RANGE_BREAKOUT',None,0
+    hi=float(rng.high.max()); lo=float(rng.low.min()); height=hi-lo
+    a=float(c.atr) if finite(c.atr) else 0.0
+    if a<=0 or not (0.3*a<=height<=2.5*a): return None,'WAIT_OPENING_RANGE_BREAKOUT',None,0
+    vol=float(c.volume_ratio) if finite(c.volume_ratio) else 0.0
+    if c.close>hi and vol>=0.9 and c.close>c.open:
+        return 'LONG','OPENING_RANGE_BREAKOUT',float(a*1.3),22
+    if c.close<lo and vol>=0.9 and c.close<c.open:
+        return 'SHORT','OPENING_RANGE_BREAKOUT',float(a*1.3),22
+    return None,'WAIT_OPENING_RANGE_BREAKOUT',None,0
+
 DETECTORS={'SMC_SWEEP':detect_smc,'EMA_SCALP':detect_ema,'MOMENTUM':detect_momentum,
-           'BREAKOUT':detect_breakout,'TREND_PULLBACK':detect_trend_pullback,'MEAN_REVERSION':detect_mean_reversion}
+           'BREAKOUT':detect_breakout,'TREND_PULLBACK':detect_trend_pullback,'MEAN_REVERSION':detect_mean_reversion,
+           'BOLLINGER_SQUEEZE':detect_bollinger_squeeze,'OPENING_RANGE_BREAKOUT':detect_opening_range_breakout}
 
 DECISION_COLUMNS=['schema_version','candidate_id','time','strategy','side','setup','regime','direction','strength','volatility','market_state','run_mode','context_fit','context_reason','score_pass','detector_quality','cost_pass','quality_pass','soft_context_mismatch',
  'price','rsi_5m','adx_1h','er24_1h','vol_ratio_1h','atr_pct_5m','body_atr_5m','volume_ratio_5m','volume_ratio_15m',
