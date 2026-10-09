@@ -73,7 +73,7 @@ def feed():
     except (ValueError, KeyError, TypeError): return {'error': 'Invalid candles'}, 400
     key = os.environ.get('BRIDGE_STRATEGY', 'TREND_PULLBACK')
     if key not in bot.STRATEGIES: return {'error': 'Invalid BRIDGE_STRATEGY'}, 500
-    fast_pullback = key=='TREND_PULLBACK' and symbol.upper() in ('US500','US500.CASH')
+    fast_pullback = key=='TREND_PULLBACK' and symbol.upper() in ('US500','US500.CASH','BTCUSD')
     sig = bot.signal_for(key, c, bot.regime_snapshot(c), pullback_30m_5m=fast_pullback)
     timeframes = {'trend':'30m','confirmation':'5m'} if fast_pullback else {'trend':'1h','confirmation':'15m'}
     if symbol not in status['markets']:

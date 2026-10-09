@@ -9,11 +9,11 @@ from mt5_bridge.markets import market_symbols
 from mt5_bridge.worker import poll_symbol
 
 class Tests(unittest.TestCase):
-    def test_only_sp500_uses_30m_5m(self):
+    def test_sp500_and_btc_use_30m_5m(self):
         client=app.test_client(); now=int(time.time())-10
         bars=[dict(timestamp=now-(599-i)*300,open=5000,high=5002,low=4998,close=5001,volume=100) for i in range(600)]
         with patch.dict(os.environ,{'MT5_SYMBOLS':'US500.cash,BTCUSD','BRIDGE_STRATEGY':'TREND_PULLBACK'}),patch('mt5_bridge.server.bot.signal_for',return_value=None) as signal,patch('mt5_bridge.server.bot.regime_snapshot',return_value={}):
-            for symbol,expected in [('US500.cash',True),('BTCUSD',False)]:
+            for symbol,expected in [('US500.cash',True),('BTCUSD',True)]:
                 client.post('/bridge/feed',json={'symbol':symbol,'bars':bars},headers={'Authorization':'Bearer '+'t'*48})
                 self.assertEqual(signal.call_args.kwargs['pullback_30m_5m'],expected)
 
