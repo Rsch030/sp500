@@ -1,21 +1,22 @@
 #property strict
-#property version "0.20"
+#property version "0.21"
 #include <Trade/Trade.mqh>
-// Research prototype. Attach one instance only, to your broker's gold chart.
+// Guarded gold EA. Attach one instance only, to the broker XAUUSD chart.
 input bool SignalsOnly=true;
 input bool AllowRealAccount=false;
 input double MaxRiskEUR=10.0;
 input double MaxMarginEUR=10.0;
 input double MaxExperimentLossEUR=50.0;
-input int MaxExperimentEntries=5;
+input int MaxExperimentEntries=10;
+input double MinimumBalanceEUR=100.0;
 input double CostReservePercent=25.0;
-input ulong Magic=26010752; // This identifies the entire five-trade experiment.
+input ulong Magic=26010752; // This identifies this ten-entry experiment.
 CTrade trade;
 int fast=INVALID_HANDLE,slow=INVALID_HANDLE,entryMA=INVALID_HANDLE,atr=INVALID_HANDLE;
 datetime lastBar=0;
 string fxSymbol="";
 bool inverseFX=false;
-void Status(string s) { Comment("Ultima Gold v0.20\n",s); Print(s); }
+void Status(string s) { Comment("Ultima Gold v0.21\n",s); Print(s); }
 bool EURRate(double &rate) {
  if(AccountInfoString(ACCOUNT_CURRENCY)=="EUR") { rate=1; return true; }
  MqlTick q;
@@ -30,7 +31,7 @@ bool ReadValue(int h,int shift,double &v) {
 }
 int OnInit() {
  if(MaxRiskEUR<=0 || MaxRiskEUR>10 || MaxMarginEUR<=0 || MaxMarginEUR>10 || MaxExperimentLossEUR<=0 || MaxExperimentLossEUR>50 ||
-    MaxExperimentEntries<1 || MaxExperimentEntries>5 || CostReservePercent<20 || CostReservePercent>=100)
+    MaxExperimentEntries<1 || MaxExperimentEntries>10 || MinimumBalanceEUR<100.0 || CostReservePercent<20 || CostReservePercent>=100)
     return INIT_PARAMETERS_INCORRECT;
  string currency=AccountInfoString(ACCOUNT_CURRENCY);
  if(currency!="EUR") {
@@ -113,8 +114,10 @@ void OnTick() {
  if(PositionsTotal()>0 || OrdersTotal()>0) { Status("Account already has exposure; no new trade"); return; }
  double rate=0;
  if(!EURRate(rate)) { Status("Waiting for valid EUR conversion quote"); return; }
+ double balanceEUR=AccountInfoDouble(ACCOUNT_BALANCE)/rate;
+ if(!MathIsValidNumber(balanceEUR) || balanceEUR<MinimumBalanceEUR) { Status(StringFormat("Waiting for at least EUR %.2f account balance",MinimumBalanceEUR)); return; }
  double remaining=0;
- if(!ExperimentGuard(rate,remaining)) { Status("Five-trade experiment limit, loss limit, cooldown or unavailable history"); return; }
+ if(!ExperimentGuard(rate,remaining)) { Status("Ten-entry limit, loss limit, cooldown or unavailable history"); return; }
  double f,s,e1,e2,a;
  if(!ReadValue(fast,1,f)||!ReadValue(slow,1,s)||!ReadValue(entryMA,1,e1)||!ReadValue(entryMA,2,e2)||!ReadValue(atr,1,a)) return;
  double c1=iClose(_Symbol,PERIOD_M5,1),c2=iClose(_Symbol,PERIOD_M5,2);
